@@ -1,0 +1,8 @@
+{
+  "key.category.litematica-autobuy.main": "Litematica 自動補料",
+  "key.litematica-autobuy.toggle": "切換自動補料",
+  "key.litematica-autobuy.scan": "立即掃描並補料",
+  "key.litematica-autobuy.reload": "重新載入 AutoBuy 設定",
+  "key.litematica-autobuy.sync_whitelist": "從目前選取同步白名單",
+  "key.litematica-autobuy.purchase_mode": "切換購買模式（精確層／大量）"
+}

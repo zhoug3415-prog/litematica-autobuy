@@ -1,0 +1,12 @@
+.gradle/
+build/
+run/
+.idea/
+.vscode/
+.qoder/
+*.iml
+*.jar.bak
+*.log
+.DS_Store
+libs/*.jar
+!libs/README.md

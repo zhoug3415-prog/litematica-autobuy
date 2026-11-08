@@ -1,0 +1,8 @@
+{
+  "key.category.litematica-autobuy.main": "Litematica AutoBuy",
+  "key.litematica-autobuy.toggle": "Toggle auto-buy",
+  "key.litematica-autobuy.scan": "Scan and buy now",
+  "key.litematica-autobuy.reload": "Reload AutoBuy config",
+  "key.litematica-autobuy.sync_whitelist": "Sync whitelist from selection",
+  "key.litematica-autobuy.purchase_mode": "Toggle purchase mode (exact layer / bulk)"
+}

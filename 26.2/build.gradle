@@ -38,6 +38,7 @@ dependencies {
     // 26.2 template and the printer build use plain implementation for mod jars.
     implementation "maven.modrinth:litematica:${project.litematica_version}"
     implementation "maven.modrinth:malilib:${project.malilib_version}"
+    implementation "maven.modrinth:cloth-config:${project.cloth_config_version}"
 
     // Printer is optional at compile time because integration is reflection-only.
     // Put the actual jar in libs/ to load it in the dev client.

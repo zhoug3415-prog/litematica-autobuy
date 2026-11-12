@@ -2,17 +2,28 @@ package dev.autobuy.litematica;
 
 import com.google.common.collect.Multimap;
 import fi.dy.masa.litematica.data.DataManager;
+import fi.dy.masa.litematica.materials.IMaterialList;
 import fi.dy.masa.litematica.materials.MaterialListBase;
-import fi.dy.masa.litematica.scheduler.ITask;
+import fi.dy.masa.litematica.materials.MaterialListEntry;
 import fi.dy.masa.litematica.scheduler.TaskScheduler;
+import fi.dy.masa.litematica.scheduler.tasks.TaskCountBlocksPlacement;
 import fi.dy.masa.litematica.schematic.placement.SchematicPlacement;
+import fi.dy.masa.litematica.schematic.placement.SubRegionPlacement;
 import fi.dy.masa.litematica.util.BlockInfoListType;
+import net.minecraft.client.Minecraft;
+import fi.dy.masa.malilib.util.LayerMode;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.block.Mirror;
+import net.minecraft.world.level.block.Rotation;
 import org.slf4j.Logger;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public final class LitematicaBridge {
@@ -24,6 +35,10 @@ public final class LitematicaBridge {
             "fi.dy.masa.litematica.scheduler.tasks.TaskCountBlocksPlacement";
 
     private String lastError;
+    private MaterialCount materialCount;
+    private boolean adaptiveWhitelist;
+    private SchematicPlacement nearestPlacement;
+    private MaterialListBase bulkRecountRequired;
     private boolean materialListProgressWarningLogged;
     private boolean printerReflectionInitialized;
     private boolean printerApiAvailable;
@@ -32,17 +47,73 @@ public final class LitematicaBridge {
     private Method isPrintEnabled;
     private Method getPrinterStatus;
 
-    public Optional<SchematicPlacement> getSelectedPlacement() {
+    public void setAdaptiveWhitelist(boolean enabled) {
+        if (adaptiveWhitelist != enabled) {
+            if (!enabled && materialCount != null && !materialCount.selection.singleLayer()) {
+                bulkRecountRequired = materialCount.materialList;
+            }
+            invalidateMaterialCount();
+            nearestPlacement = null;
+        }
+        adaptiveWhitelist = enabled;
+    }
+
+    public boolean isAdaptiveWhitelist() {
+        return adaptiveWhitelist;
+    }
+
+    public Optional<SchematicPlacement> getTargetPlacement() {
         try {
             var manager = DataManager.getSchematicPlacementManager();
             lastError = null;
-            return manager == null
-                    ? Optional.empty()
-                    : Optional.ofNullable(manager.getSelectedSchematicPlacement());
+            if (manager == null) {
+                return Optional.empty();
+            }
+            if (!adaptiveWhitelist) {
+                return Optional.ofNullable(manager.getSelectedSchematicPlacement());
+            }
+            var player = Minecraft.getInstance().player;
+            if (player == null) {
+                return Optional.empty();
+            }
+            SchematicPlacement closest = null;
+            SchematicPlacement selected = manager.getSelectedSchematicPlacement();
+            double closestDistance = Double.POSITIVE_INFINITY;
+            for (SchematicPlacement placement : manager.getAllSchematicsPlacements()) {
+                if (!placement.isEnabled()) {
+                    continue;
+                }
+                double distance = Double.POSITIVE_INFINITY;
+                for (var box : placement.getSubRegionBoxes(
+                        SubRegionPlacement.RequiredEnabled.PLACEMENT_ENABLED).values()) {
+                    BlockPos first = box.getPos1();
+                    BlockPos second = box.getPos2();
+                    if (first == null || second == null) {
+                        continue;
+                    }
+                    double dx = distanceToInterval(player.getX(), first.getX(), second.getX());
+                    double dy = distanceToInterval(player.getY(), first.getY(), second.getY());
+                    double dz = distanceToInterval(player.getZ(), first.getZ(), second.getZ());
+                    distance = Math.min(distance, dx * dx + dy * dy + dz * dz);
+                }
+                if (Double.isFinite(distance) && (distance < closestDistance
+                        || (distance == closestDistance && (placement == nearestPlacement
+                        || (closest != nearestPlacement && placement == selected))))) {
+                    closest = placement;
+                    closestDistance = distance;
+                }
+            }
+            nearestPlacement = closest;
+            return Optional.ofNullable(closest);
         } catch (Exception | LinkageError e) {
-            fail("讀取 Litematica 選取 placement 失敗", e);
+            fail("讀取 Litematica 目標 placement 失敗", e);
             return Optional.empty();
         }
+    }
+
+    private static double distanceToInterval(double position, int first, int second) {
+        return Math.max(0.0, Math.max(Math.min(first, second) - position,
+                position - ((double) Math.max(first, second) + 1.0)));
     }
 
     public MaterialListBase getMaterialList(SchematicPlacement placement) {
@@ -98,7 +169,7 @@ public final class LitematicaBridge {
 
     public MaterialListProgress getMaterialListProgress() {
         try {
-            Optional<SchematicPlacement> selectedOptional = getSelectedPlacement();
+            Optional<SchematicPlacement> selectedOptional = getTargetPlacement();
             if (selectedOptional.isEmpty()) {
                 return MaterialListProgress.unknown();
             }
@@ -116,7 +187,7 @@ public final class LitematicaBridge {
                 if (!(taskPlacement instanceof SchematicPlacement placement)) {
                     continue;
                 }
-                if (placement != selected && !placement.getName().equals(selected.getName())) {
+                if (placement != selected) {
                     continue;
                 }
 
@@ -140,14 +211,158 @@ public final class LitematicaBridge {
         return MaterialListProgress.unknown();
     }
 
+    public MaterialSelection getMaterialSelection(boolean singleLayer) {
+        var range = DataManager.getRenderLayerRange();
+        if (singleLayer && range.getLayerMode() != LayerMode.SINGLE_LAYER) {
+            return null;
+        }
+        return getTargetPlacement().filter(SchematicPlacement::isEnabled).map(placement -> {
+            Map<String, PlacementTransform> subRegions = new HashMap<>();
+            for (var region : placement.getAllSubRegionsPlacements()) {
+                subRegions.put(region.getName(), new PlacementTransform(region.getPos().immutable(),
+                        region.getRotation(), region.getMirror(), region.isEnabled()));
+            }
+            return new MaterialSelection(placement, singleLayer,
+                    singleLayer ? range.getAxis() : null, singleLayer ? range.getLayerSingle() : 0,
+                    new PlacementTransform(placement.getOrigin().immutable(), placement.getRotation(),
+                            placement.getMirror(), placement.isEnabled()), Map.copyOf(subRegions));
+        }).orElse(null);
+    }
+
+    public boolean isCurrentSelection(MaterialSelection selection) {
+        return selection != null && selection.equals(getMaterialSelection(selection.singleLayer()));
+    }
+
+    public void invalidateChangedSelection() {
+        if (materialCount != null && !isCurrentSelection(materialCount.selection)) {
+            materialCount.valid = false;
+        }
+        cancelObsoleteCount();
+    }
+
+    public void invalidateMaterialCount() {
+        if (materialCount != null) {
+            materialCount.valid = false;
+        }
+        cancelObsoleteCount();
+    }
+
+    private void cancelObsoleteCount() {
+        if (materialCount != null && !materialCount.valid && materialCount.entries == null
+                && TaskScheduler.getInstanceClient().getAllTasks().contains(materialCount.task)) {
+            TaskScheduler.getInstanceClient().removeTask(materialCount.task);
+        }
+    }
+
+    public boolean prepareCachedBulkList(MaterialListBase list) {
+        if (list != bulkRecountRequired) {
+            return true;
+        }
+        if (TaskScheduler.getInstanceClient().hasTask(TaskCountBlocksPlacement.class)) {
+            return false;
+        }
+        bulkRecountRequired = null;
+        materialCount = null;
+        list.setMaterialListType(BlockInfoListType.ALL);
+        list.setMaterialListEntries(List.of());
+        list.reCreateMaterialList();
+        return false;
+    }
+
+    public void resetMaterialTracking() {
+        materialCount = null;
+        nearestPlacement = null;
+        bulkRecountRequired = null;
+    }
+
+    public boolean prepareMaterialList(MaterialListBase list, boolean singleLayer) {
+        invalidateChangedSelection();
+        if (materialCount != null) {
+            if (materialCount.entries != null) {
+                MaterialCount completed = materialCount;
+                materialCount = null;
+                if (completed.valid && completed.materialList == list
+                        && completed.selection.singleLayer() == singleLayer
+                        && list.getMaterialListType() == completed.getMaterialListType()) {
+                    list.setMaterialListEntries(completed.entries);
+                    return true;
+                }
+            } else if (TaskScheduler.getInstanceClient().hasTask(TaskCountBlocksPlacement.class)) {
+                if (materialCount.selection.singleLayer() != singleLayer) {
+                    materialCount.valid = false;
+                }
+                return false;
+            } else {
+                materialCount = null;
+            }
+        }
+
+        if (!TaskScheduler.getInstanceClient().hasTask(TaskCountBlocksPlacement.class)) {
+            MaterialSelection selection = getMaterialSelection(singleLayer);
+            if (selection != null) {
+                startMaterialCount(selection, list);
+            }
+        }
+        return false;
+    }
+
+    private void startMaterialCount(MaterialSelection selection, MaterialListBase list) {
+        MaterialCount count = new MaterialCount(selection, list);
+        list.setMaterialListType(count.getMaterialListType());
+        list.setMaterialListEntries(List.of());
+        TaskCountBlocksPlacement task = new TaskCountBlocksPlacement(selection.placement(), count);
+        count.task = task;
+        task.disableCompletionMessage();
+        TaskScheduler.getInstanceClient().scheduleTask(task, 20);
+        materialCount = count;
+    }
+
+    public boolean canResumeMaterialScan() {
+        return (materialCount != null && materialCount.entries != null)
+                || !TaskScheduler.getInstanceClient().hasTask(TaskCountBlocksPlacement.class);
+    }
+
+    public record MaterialSelection(SchematicPlacement placement, boolean singleLayer,
+                                    Direction.Axis axis, int layer, PlacementTransform transform,
+                                    Map<String, PlacementTransform> subRegions) {
+    }
+
+    public record PlacementTransform(BlockPos position, Rotation rotation, Mirror mirror, boolean enabled) {
+    }
+
+    private static final class MaterialCount implements IMaterialList {
+        private final MaterialSelection selection;
+        private final MaterialListBase materialList;
+        private TaskCountBlocksPlacement task;
+        private List<MaterialListEntry> entries;
+        private boolean valid = true;
+
+        private MaterialCount(MaterialSelection selection, MaterialListBase materialList) {
+            this.selection = selection;
+            this.materialList = materialList;
+        }
+
+        @Override
+        public BlockInfoListType getMaterialListType() {
+            return selection.singleLayer() ? BlockInfoListType.RENDER_LAYERS : BlockInfoListType.ALL;
+        }
+
+        @Override
+        public void setMaterialListEntries(List<MaterialListEntry> entries) {
+            this.entries = List.copyOf(entries);
+        }
+    }
+
     public boolean switchMaterialListType(boolean renderLayers) {
         try {
-            Class<?> taskClass = Class.forName(TASK_COUNT_BLOCKS_PLACEMENT);
-            if (TaskScheduler.getInstanceClient().hasTask(taskClass.asSubclass(ITask.class))) {
+            if (TaskScheduler.getInstanceClient().hasTask(TaskCountBlocksPlacement.class)) {
                 return false;
             }
 
-            Optional<SchematicPlacement> placementOptional = getSelectedPlacement();
+            if (renderLayers && getMaterialSelection(true) == null) {
+                return false;
+            }
+            Optional<SchematicPlacement> placementOptional = getTargetPlacement();
             if (placementOptional.isEmpty()) {
                 return false;
             }
@@ -156,8 +371,16 @@ public final class LitematicaBridge {
                 return false;
             }
 
-            BlockInfoListType desired = renderLayers
-                    ? BlockInfoListType.RENDER_LAYERS : BlockInfoListType.ALL;
+            if (renderLayers || adaptiveWhitelist) {
+                MaterialSelection selection = getMaterialSelection(renderLayers);
+                if (selection == null) {
+                    return false;
+                }
+                startMaterialCount(selection, list);
+                return true;
+            }
+            resetMaterialTracking();
+            BlockInfoListType desired = BlockInfoListType.ALL;
             if (list.getMaterialListType() == desired) {
                 return true;
             }
@@ -180,7 +403,7 @@ public final class LitematicaBridge {
                 return "";
             }
             return switch (range.getLayerMode().name()) {
-                case "SINGLE" -> "單層";
+                case "SINGLE_LAYER" -> "單層 " + range.getAxis().name() + "=" + range.getLayerSingle();
                 case "ALL_BELOW" -> "下方所有";
                 case "ALL_ABOVE" -> "上方所有";
                 case "ALL" -> "全部";

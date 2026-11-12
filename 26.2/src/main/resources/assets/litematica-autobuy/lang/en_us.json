@@ -4,5 +4,6 @@
   "key.litematica-autobuy.scan": "Scan and buy now",
   "key.litematica-autobuy.reload": "Reload AutoBuy config",
   "key.litematica-autobuy.sync_whitelist": "Sync whitelist from selection",
-  "key.litematica-autobuy.purchase_mode": "Toggle purchase mode (exact layer / bulk)"
+  "key.litematica-autobuy.purchase_mode": "Toggle purchase mode (exact single layer / bulk)",
+  "key.litematica-autobuy.config_gui": "Open AutoBuy settings"
 }

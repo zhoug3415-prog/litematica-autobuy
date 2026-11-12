@@ -19,23 +19,38 @@ public final class MaterialScanner {
         this.bridge = bridge;
     }
 
-    public ScanResult scan(AutoBuyConfig.RequiredCountMode mode) {
-        Optional<SchematicPlacement> placementOptional = bridge.getSelectedPlacement();
+    public ScanResult scan(AutoBuyConfig.PurchaseMode purchaseMode, AutoBuyConfig.RequiredCountMode mode) {
+        Optional<SchematicPlacement> placementOptional = bridge.getTargetPlacement();
         if (placementOptional.isEmpty()) {
             String error = bridge.getLastError();
             return error != null ? ScanResult.error(error) : ScanResult.noPlacement();
         }
 
         SchematicPlacement placement = placementOptional.get();
+        boolean singleLayerOnly = purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER;
         try {
+            if (singleLayerOnly && bridge.getMaterialSelection(true) == null) {
+                return ScanResult.singleLayerRequired(placement.getName());
+            }
             MaterialListBase list = bridge.getMaterialList(placement);
             if (list == null) {
                 return ScanResult.error(bridge.getLastError() != null
                         ? bridge.getLastError() : "material list unavailable");
             }
 
+            boolean freshCount = singleLayerOnly || bridge.isAdaptiveWhitelist();
+            if (freshCount && !bridge.prepareMaterialList(list, singleLayerOnly)) {
+                return ScanResult.listEmpty(placement.getName());
+            }
+            if (!freshCount && !bridge.prepareCachedBulkList(list)) {
+                return ScanResult.listEmpty(placement.getName());
+            }
+            if (!freshCount && list.getMaterialListType() != BlockInfoListType.ALL) {
+                bridge.switchMaterialListType(false);
+                return ScanResult.listEmpty(placement.getName());
+            }
             var entries = list.getMaterialsAll();
-            if (entries.isEmpty()) {
+            if (!freshCount && entries.isEmpty()) {
                 return ScanResult.listEmpty(placement.getName());
             }
 
@@ -56,6 +71,10 @@ public final class MaterialScanner {
                 }
                 String id = ItemIds.normalizeRegistryId(key.toString());
                 int missing = Math.max(0, entry.getCountMissing());
+                if (singleLayerOnly) {
+                    // Litematica includes non-air mismatches in countMissing.
+                    missing = Math.max(0, missing - Math.max(0, entry.getCountMismatched()));
+                }
                 int total = Math.max(0, entry.getCountTotal());
                 int maxStack = Math.max(1, stack.getMaxStackSize());
 
@@ -63,7 +82,8 @@ public final class MaterialScanner {
                 missingByItem.merge(id, missing, (left, right) ->
                         (int) Math.min(Integer.MAX_VALUE, (long) left + right));
 
-                int count = mode == AutoBuyConfig.RequiredCountMode.TOTAL ? total : missing;
+                int count = !singleLayerOnly && mode == AutoBuyConfig.RequiredCountMode.TOTAL
+                        ? total : missing;
                 if (count <= 0) {
                     continue;
                 }
@@ -83,6 +103,7 @@ public final class MaterialScanner {
     public enum Status {
         OK,
         NO_PLACEMENT,
+        SINGLE_LAYER_REQUIRED,
         LIST_EMPTY,
         ERROR
     }
@@ -100,6 +121,11 @@ public final class MaterialScanner {
 
         public static ScanResult noPlacement() {
             return new ScanResult(Status.NO_PLACEMENT, null, Map.of(), Map.of(), Map.of(),
+                    false, null);
+        }
+
+        public static ScanResult singleLayerRequired(String name) {
+            return new ScanResult(Status.SINGLE_LAYER_REQUIRED, name, Map.of(), Map.of(), Map.of(),
                     false, null);
         }
 

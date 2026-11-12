@@ -21,6 +21,7 @@ public final class AutoBuyClient implements ClientModInitializer {
     private static KeyMapping reloadKey;
     private static KeyMapping syncWhitelistKey;
     private static KeyMapping purchaseModeKey;
+    private static KeyMapping configGuiKey;
 
     @Override
     public void onInitializeClient() {
@@ -34,6 +35,7 @@ public final class AutoBuyClient implements ClientModInitializer {
         reloadKey = register("reload", category);
         syncWhitelistKey = register("sync_whitelist", category);
         purchaseModeKey = register("purchase_mode", category);
+        configGuiKey = register("config_gui", category);
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (manager == null) {
@@ -54,6 +56,9 @@ public final class AutoBuyClient implements ClientModInitializer {
             while (purchaseModeKey.consumeClick()) {
                 manager.requestPurchaseModeToggle();
             }
+            while (configGuiKey.consumeClick()) {
+                client.gui.setScreen(AutoBuyConfigScreen.create(client.gui.screen()));
+            }
             manager.onClientTick(client);
         });
 
@@ -67,6 +72,10 @@ public final class AutoBuyClient implements ClientModInitializer {
             LOGGER.warn(config.loadWarning);
         }
         LOGGER.info("Litematica AutoBuy initialized; hotkeys are unbound by default.");
+    }
+
+    public static AutoBuyManager getManager() {
+        return manager;
     }
 
     private static KeyMapping register(String name, KeyMapping.Category category) {

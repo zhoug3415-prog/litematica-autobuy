@@ -130,7 +130,35 @@ public final class AutoBuyConfig {
         }
     }
 
-    private void normalize() {
+    public AutoBuyConfig copy() {
+        AutoBuyConfig copy = GSON.fromJson(GSON.toJson(this), AutoBuyConfig.class);
+        if (copy == null) {
+            copy = new AutoBuyConfig();
+        }
+        copy.normalize();
+        return copy;
+    }
+
+    public boolean save() {
+        Path path = FabricLoader.getInstance().getConfigDir().resolve(FILE_NAME);
+        try {
+            Files.createDirectories(path.getParent());
+            Path temp = path.resolveSibling(FILE_NAME + ".tmp");
+            Files.writeString(temp, GSON.toJson(this), StandardCharsets.UTF_8);
+            try {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException atomicMoveFailure) {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING);
+            }
+            return true;
+        } catch (IOException e) {
+            AutoBuyClient.LOGGER.error("Failed to save config {}", path, e);
+            return false;
+        }
+    }
+
+    public void normalize() {
         scanIntervalTicks = clamp(scanIntervalTicks, 1, 1200);
         commandCooldownMs = clamp(commandCooldownMs, 0, 60_000);
         maxCommandsPerScan = clamp(maxCommandsPerScan, 1, 32);
@@ -242,7 +270,7 @@ public final class AutoBuyConfig {
 
     public boolean isWhitelisted(String itemId) {
         if (whitelistSet.isEmpty()) {
-            return whitelistEmptyAllowAll;
+            return !autoSyncWhitelist && whitelistEmptyAllowAll;
         }
         return whitelistSet.contains(ItemIds.normalizeRegistryId(itemId));
     }

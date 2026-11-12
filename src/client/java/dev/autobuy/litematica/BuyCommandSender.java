@@ -7,6 +7,8 @@ import org.slf4j.Logger;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class BuyCommandSender {
     private static final Logger LOG = AutoBuyClient.LOGGER;
@@ -47,6 +49,14 @@ public final class BuyCommandSender {
 
     public int size() {
         return queue.size();
+    }
+
+    public Map<String, Integer> queuedCounts() {
+        Map<String, Integer> counts = new HashMap<>();
+        for (Order order : queue) {
+            counts.merge(order.itemId(), order.count(), Integer::sum);
+        }
+        return counts;
     }
 
     public void clear() {

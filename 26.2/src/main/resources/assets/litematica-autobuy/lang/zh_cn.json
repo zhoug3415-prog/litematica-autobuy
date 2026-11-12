@@ -4,5 +4,6 @@
   "key.litematica-autobuy.scan": "立即扫描并补料",
   "key.litematica-autobuy.reload": "重新加载 AutoBuy 配置",
   "key.litematica-autobuy.sync_whitelist": "从当前选区同步白名单",
-  "key.litematica-autobuy.purchase_mode": "切换购买模式（精确层／大量）"
+  "key.litematica-autobuy.purchase_mode": "切换购买模式（精确单层／大量）",
+  "key.litematica-autobuy.config_gui": "打开 AutoBuy 设置"
 }

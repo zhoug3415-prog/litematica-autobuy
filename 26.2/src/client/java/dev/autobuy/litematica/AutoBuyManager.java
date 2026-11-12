@@ -10,6 +10,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -56,12 +57,80 @@ public final class AutoBuyManager {
     private String lastSentItemId;
     private long lastSentAtMs;
     private String startupWarning;
+    private LitematicaBridge.MaterialSelection queuedSelection;
+    private LitematicaBridge.MaterialSelection adaptiveTarget;
+    private Map<String, Integer> queuedMaxStackByItem = Map.of();
+    private LitematicaBridge.MaterialSelection pendingManualScan;
+    private LitematicaBridge.MaterialSelection pendingWhitelistSync;
 
     public AutoBuyManager(AutoBuyConfig config) {
         this.config = config;
+        bridge.setAdaptiveWhitelist(config.autoSyncWhitelist);
         this.sender = new BuyCommandSender(config);
         this.feedback = new Feedback(config);
         this.startupWarning = config.loadWarning;
+    }
+
+    public AutoBuyConfig getConfig() {
+        return config;
+    }
+
+    public boolean isAutoEnabled() {
+        return autoEnabled;
+    }
+
+    public void setAutoEnabled(boolean enabled) {
+        if (autoEnabled == enabled) {
+            return;
+        }
+        autoEnabled = enabled;
+        bridge.invalidateMaterialCount();
+        if (enabled) {
+            lastAutoScanTick = tickCounter - Math.max(1, config.scanIntervalTicks);
+            feedback.chat("自動補料已開啟。");
+            feedback.actionBar("自動補料：開啟");
+        } else {
+            sender.clear();
+            feedback.chat("自動補料已關閉；已排入佇列的指令已清除。");
+            feedback.actionBar("自動補料：關閉");
+        }
+    }
+
+    public boolean applyGuiSettings(AutoBuyConfig next, boolean autoEnabled) {
+        next.normalize();
+        bridge.setAdaptiveWhitelist(next.autoSyncWhitelist);
+        boolean modeOk = true;
+
+        if (next.purchaseMode != config.purchaseMode) {
+            modeOk = bridge.switchMaterialListType(
+                    next.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER);
+            if (!modeOk) {
+                next.purchaseMode = config.purchaseMode;
+            }
+        }
+
+        if (!next.save()) {
+            bridge.setAdaptiveWhitelist(config.autoSyncWhitelist);
+            feedback.error("設定儲存失敗", null);
+            return false;
+        }
+
+        config = next;
+        adaptiveTarget = null;
+        cancelPendingMaterialRequests();
+        bridge.invalidateMaterialCount();
+        feedback.setConfig(config);
+        sender.updateConfig(config);
+        sender.clear();
+        resetEmptyMaterialListState();
+        setAutoEnabled(autoEnabled);
+
+        if (modeOk) {
+            feedback.chat("設定已儲存。");
+        } else {
+            feedback.chat("設定已儲存；購買模式未切換（計算中、未選取 placement，或精確模式尚未設為單層）。");
+        }
+        return modeOk;
     }
 
     public void requestToggle() {
@@ -117,8 +186,10 @@ public final class AutoBuyManager {
             }
 
             processReload();
+            bridge.invalidateChangedSelection();
             processToggle();
             processPurchaseModeToggle();
+            updateAdaptiveTarget();
             processWhitelistSync();
             processIncomingMessages();
             tickSender();
@@ -137,11 +208,22 @@ public final class AutoBuyManager {
         }
     }
 
+    private void cancelPendingMaterialRequests() {
+        pendingManualScan = null;
+        pendingWhitelistSync = null;
+        scanRequested = false;
+        whitelistSyncRequested = false;
+    }
+
     private void resetConnectionState() {
+        cancelPendingMaterialRequests();
         autoEnabled = false;
         whitelistSyncRequested = false;
         purchaseModeToggleRequested = false;
         sender.clear();
+        queuedSelection = null;
+        adaptiveTarget = null;
+        bridge.resetMaterialTracking();
         pending.clear();
         blockedItems.clear();
         blockedReasons.clear();
@@ -162,8 +244,14 @@ public final class AutoBuyManager {
             return;
         }
         reloadRequested = false;
+        cancelPendingMaterialRequests();
 
         config = AutoBuyConfig.loadOrCreate();
+        bridge.setAdaptiveWhitelist(config.autoSyncWhitelist);
+        adaptiveTarget = null;
+        lastAutoScanTick = -1L;
+        sender.clear();
+        bridge.invalidateMaterialCount();
         feedback.setConfig(config);
         sender.updateConfig(config);
         feedback.clearThrottles();
@@ -190,17 +278,7 @@ public final class AutoBuyManager {
             return;
         }
         toggleRequested = false;
-
-        autoEnabled = !autoEnabled;
-        if (autoEnabled) {
-            lastAutoScanTick = tickCounter - Math.max(1, config.scanIntervalTicks);
-            feedback.chat("自動補料已開啟。");
-            feedback.actionBar("自動補料：開啟");
-        } else {
-            sender.clear();
-            feedback.chat("自動補料已關閉；已排入佇列的指令已清除。");
-            feedback.actionBar("自動補料：關閉");
-        }
+        setAutoEnabled(!autoEnabled);
     }
 
     private void processPurchaseModeToggle() {
@@ -216,6 +294,10 @@ public final class AutoBuyManager {
                 ? AutoBuyConfig.PurchaseMode.BULK
                 : AutoBuyConfig.PurchaseMode.EXACT_LAYER;
         boolean renderLayers = next == AutoBuyConfig.PurchaseMode.EXACT_LAYER;
+        if (renderLayers && bridge.getMaterialSelection(true) == null) {
+            showSingleLayerRequired();
+            return;
+        }
 
         if (!bridge.switchMaterialListType(renderLayers)) {
             feedback.chat("無法切換購買模式：材料清單正在計算，或尚未選取 placement；"
@@ -225,16 +307,56 @@ public final class AutoBuyManager {
         }
 
         config.purchaseMode = next;
+        cancelPendingMaterialRequests();
         sender.clear();
         resetEmptyMaterialListState();
-        String label = next == AutoBuyConfig.PurchaseMode.EXACT_LAYER ? "精確渲染層" : "大量";
+        String label = next == AutoBuyConfig.PurchaseMode.EXACT_LAYER ? "精確單層" : "大量";
         String listType = renderLayers ? "渲染層" : "全部";
         feedback.chat("購買模式已切換為「" + label + "」；Litematica 材料清單類型已切到「"
                 + listType + "」，必要時會重新計數，請看進度／ETA。");
         feedback.actionBar("購買模式：" + label);
     }
 
+    private void updateAdaptiveTarget() {
+        if (!config.autoSyncWhitelist) {
+            return;
+        }
+        LitematicaBridge.MaterialSelection target = bridge.getMaterialSelection(
+                config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER);
+        if (Objects.equals(adaptiveTarget, target)) {
+            return;
+        }
+        adaptiveTarget = target;
+        sender.clear();
+        bridge.invalidateChangedSelection();
+        lastAutoScanTick = -1L;
+        resetEmptyMaterialListState();
+        if (target != null) {
+            feedback.chatThrottled("adaptive-target",
+                    "自適應白名單：目標「" + target.placement().getName()
+                            + "」，清單完成後將取代舊白名單。", 5_000L);
+        } else {
+            feedback.actionBar("自適應白名單：無可用目標，已暫停購買並保留原名單。");
+        }
+    }
+
     private void processWhitelistSync() {
+        if (pendingWhitelistSync != null) {
+            if (!bridge.isCurrentSelection(pendingWhitelistSync)) {
+                pendingWhitelistSync = null;
+                whitelistSyncRequested = false;
+                feedback.actionBar("單層選取已變更，已取消待執行的白名單同步。");
+                return;
+            }
+            if (!bridge.canResumeMaterialScan()) {
+                if (tickCounter % 20 == 0) {
+                    updateMaterialListProgress(System.currentTimeMillis(), emptyMaterialListPlacement);
+                }
+                return;
+            }
+            pendingWhitelistSync = null;
+            whitelistSyncRequested = true;
+        }
         if (!whitelistSyncRequested) {
             return;
         }
@@ -242,11 +364,9 @@ public final class AutoBuyManager {
         if (mc.player == null) {
             return;
         }
+        sender.clear();
 
-        MaterialScanner.ScanResult scan = scanner.scan(
-                config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER
-                        ? AutoBuyConfig.RequiredCountMode.MISSING
-                        : config.requiredCountMode);
+        MaterialScanner.ScanResult scan = scanner.scan(config.purchaseMode, config.requiredCountMode);
         switch (scan.status()) {
             case NO_PLACEMENT -> {
                 resetEmptyMaterialListState();
@@ -254,7 +374,14 @@ public final class AutoBuyManager {
                 feedback.actionBar("白名單同步：未選取 placement");
                 return;
             }
+            case SINGLE_LAYER_REQUIRED -> {
+                showSingleLayerRequired();
+                return;
+            }
             case LIST_EMPTY -> {
+                if (config.autoSyncWhitelist || config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER) {
+                    pendingWhitelistSync = bridge.getMaterialSelection(config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER);
+                }
                 handleEmptyMaterialList(scan);
                 return;
             }
@@ -265,16 +392,14 @@ public final class AutoBuyManager {
                 return;
             }
             case OK -> {
-                if (emptyMaterialListWarned) {
+                if (emptyMaterialListWarned && !config.autoSyncWhitelist
+                        && config.purchaseMode == AutoBuyConfig.PurchaseMode.BULK) {
                     feedback.chat("材料清單已就緒；開始同步白名單。");
                 }
                 resetEmptyMaterialListState();
             }
         }
 
-        if (!validatePurchaseLayerMode(scan, true)) {
-            return;
-        }
         if (scan.renderLayersOnly()) {
             feedback.chat("注意：Litematica 材料清單目前只包含渲染層，同步僅處理該範圍。");
         }
@@ -288,20 +413,14 @@ public final class AutoBuyManager {
     }
 
     private SyncOutcome applyWhitelistSync(MaterialScanner.ScanResult scan, boolean manual) {
-        LinkedHashSet<String> updated = new LinkedHashSet<>(config.whitelist);
-        int added = 0;
-        int removed = 0;
-
-        for (Map.Entry<String, Integer> entry : scan.missingByItem().entrySet()) {
-            String itemId = entry.getKey();
-            if (entry.getValue() > 0) {
-                if (updated.add(itemId)) {
-                    added++;
-                }
-            } else if (updated.remove(itemId)) {
-                removed++;
-            }
-        }
+        LinkedHashSet<String> updated = scan.missingByItem().entrySet().stream()
+                .filter(entry -> entry.getValue() > 0)
+                .map(Map.Entry::getKey)
+                .sorted()
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> previous = Set.copyOf(config.whitelist);
+        int added = (int) updated.stream().filter(id -> !previous.contains(id)).count();
+        int removed = (int) previous.stream().filter(id -> !updated.contains(id)).count();
 
         if (added == 0 && removed == 0) {
             if (manual) {
@@ -313,7 +432,8 @@ public final class AutoBuyManager {
 
         boolean saved = config.saveWhitelist(updated);
         if (!saved) {
-            String message = "白名單同步失敗：無法寫入 config，白名單未變更。";
+            sender.clear();
+            String message = "白名單同步失敗：無法寫入 config，白名單未變更；已停止本輪購買。";
             if (manual) {
                 feedback.chat(message);
                 feedback.actionBar("白名單同步：寫入失敗");
@@ -346,8 +466,10 @@ public final class AutoBuyManager {
         }
 
         if (!emptyMaterialListWarned) {
-            feedback.chat("材料清單尚未計算完成（placement: " + name
-                    + "）；進度與 ETA 會顯示在 action bar；若停滯會提示載入區塊。");
+            if (!config.autoSyncWhitelist && config.purchaseMode == AutoBuyConfig.PurchaseMode.BULK) {
+                feedback.chat("材料清單尚未計算完成（placement: " + name
+                        + "）；進度與 ETA 會顯示在 action bar；若停滯會提示載入區塊。");
+            }
             emptyMaterialListWarned = true;
         }
 
@@ -436,23 +558,41 @@ public final class AutoBuyManager {
     }
 
     private void processScanRequest() {
+        boolean resuming = pendingManualScan != null;
+        if (resuming) {
+            if (!bridge.isCurrentSelection(pendingManualScan)) {
+                pendingManualScan = null;
+                scanRequested = false;
+                feedback.actionBar("單層選取已變更，已取消待執行的手動購買。");
+                return;
+            }
+            if (!bridge.canResumeMaterialScan()) {
+                if (tickCounter % 20 == 0) {
+                    updateMaterialListProgress(System.currentTimeMillis(), emptyMaterialListPlacement);
+                }
+                return;
+            }
+            pendingManualScan = null;
+            scanRequested = true;
+        }
         if (!scanRequested) {
             return;
         }
         scanRequested = false;
 
         long now = System.currentTimeMillis();
-        if (now - lastManualScanAtMs < MANUAL_SCAN_INTERVAL_MS) {
+        if (!resuming && now - lastManualScanAtMs < MANUAL_SCAN_INTERVAL_MS) {
             feedback.actionBar("掃描過於頻繁，請稍候。");
             return;
         }
         lastManualScanAtMs = now;
         lastAutoScanTick = tickCounter;
-        scanAndEnqueue(now);
+        scanAndEnqueue(now, true);
     }
 
     private void runAutoScan() {
-        if (!autoEnabled) {
+        if ((!autoEnabled && !config.autoSyncWhitelist)
+                || pendingManualScan != null || pendingWhitelistSync != null) {
             return;
         }
         if (lastAutoScanTick >= 0
@@ -460,10 +600,35 @@ public final class AutoBuyManager {
             return;
         }
         lastAutoScanTick = tickCounter;
-        scanAndEnqueue(System.currentTimeMillis());
+        scanAndEnqueue(System.currentTimeMillis(), false);
     }
 
     private void tickSender() {
+        if ((config.autoSyncWhitelist || config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER)
+                && !sender.isEmpty()
+                && !bridge.isCurrentSelection(queuedSelection)) {
+            sender.clear();
+            feedback.actionBar("單層／選取範圍已變更，已清除舊購買佇列。");
+            return;
+        }
+        if (!sender.isEmpty() && !isPrinterGateOpen()) {
+            sender.clear();
+            feedback.actionBar("Printer 狀態不符，已停止送出待處理購買。");
+            return;
+        }
+        if ((config.autoSyncWhitelist || config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER)
+                && !sender.isEmpty()
+                && config.skipWhenInventoryFull) {
+            InventoryCounter.CountResult inventory = inventoryCounter.count(mc, config.countOffhand);
+            Map<String, Integer> reserved = sender.queuedCounts();
+            pending.requestedCounts().forEach((item, count) -> reserved.merge(item, count, Integer::sum));
+            if (requiredMainSlots(reserved, queuedMaxStackByItem, inventory.partialRoom())
+                    > inventory.emptySlots()) {
+                sender.clear();
+                feedback.actionBar("背包空間不足，暫停；等空格足夠後重新計算。");
+                return;
+            }
+        }
         long now = System.currentTimeMillis();
         List<BuyCommandSender.Order> sent = sender.tick(mc, now);
         String sendError = sender.consumeLastError();
@@ -487,6 +652,13 @@ public final class AutoBuyManager {
             feedback.debug("Pending " + order.itemId() + " x" + order.count()
                     + " baseline=" + baseline);
         }
+    }
+
+    private boolean isPrinterGateOpen() {
+        return switch (bridge.getPrinterState(config.printerGateMode)) {
+            case ACTIVE, ENABLED, PRINTING -> true;
+            default -> false;
+        };
     }
 
     private void tickPending() {
@@ -582,64 +754,80 @@ public final class AutoBuyManager {
         }
     }
 
-    private void scanAndEnqueue(long now) {
+    private boolean canPurchase(long now) {
         if (now < globalBackoffUntilMs) {
             long seconds = Math.max(1L, (globalBackoffUntilMs - now + 999L) / 1000L);
             feedback.actionBar("伺服器錯誤冷卻中：" + seconds + " 秒");
-            return;
+            return false;
         }
-
         LocalPlayer player = mc.player;
         if (player == null) {
-            return;
+            return false;
         }
         if (player.isCreative() || player.isSpectator()) {
             feedback.chatThrottled("creative", "創造／旁觀模式不自動購買。", 30_000L);
-            return;
+            return false;
         }
-        if (config.skipWhenScreenOpen && mc.gui != null && mc.gui.screen() != null) {
-            feedback.actionBar("GUI 開啟中，暫停掃描。");
-            return;
-        }
-
         LitematicaBridge.PrinterState printerState = bridge.getPrinterState(config.printerGateMode);
         switch (printerState) {
             case NOT_INSTALLED -> {
                 feedback.chatThrottled("no-printer",
                         "未偵測到 Litematica Printer；預設 gate 無法運作。"
                                 + "可將 printerGateMode 設為 ALWAYS。", 30_000L);
-                return;
+                return false;
             }
             case UNAVAILABLE -> {
                 feedback.chatThrottled("printer-api",
                         "Litematica Printer API 不相容或讀取失敗，已安全跳過。", 30_000L);
-                return;
+                return false;
             }
             case DISABLED -> {
                 feedback.chatThrottled("printer-off",
                         "Printer 未啟用（Work Switch 或 Print 未開），跳過本輪。", 15_000L);
-                return;
+                return false;
             }
             case IDLE -> {
                 feedback.chatThrottled("printer-idle",
                         "Printer 目前未在放置方塊，跳過本輪。", 15_000L);
-                return;
+                return false;
             }
             case ACTIVE, ENABLED, PRINTING -> {
+                return true;
             }
         }
+        return false;
+    }
 
-        MaterialScanner.ScanResult scan = scanner.scan(
-                config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER
-                        ? AutoBuyConfig.RequiredCountMode.MISSING
-                        : config.requiredCountMode);
+    private void scanAndEnqueue(long now, boolean manual) {
+        if ((config.autoSyncWhitelist || config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER)
+                && !sender.isEmpty()) {
+            feedback.actionBar("補料佇列傳送中 " + sender.size());
+            return;
+        }
+        if (config.skipWhenScreenOpen && mc.gui != null && mc.gui.screen() != null) {
+            feedback.actionBar("GUI 開啟中，暫停掃描。");
+            return;
+        }
+        if (!config.autoSyncWhitelist && !canPurchase(now)) {
+            return;
+        }
+
+        MaterialScanner.ScanResult scan = scanner.scan(config.purchaseMode, config.requiredCountMode);
         switch (scan.status()) {
             case NO_PLACEMENT -> {
                 resetEmptyMaterialListState();
                 feedback.chatThrottled("no-placement", "未選取 Litematica placement。", 15_000L);
                 return;
             }
+            case SINGLE_LAYER_REQUIRED -> {
+                showSingleLayerRequired();
+                return;
+            }
             case LIST_EMPTY -> {
+                if (manual && (config.autoSyncWhitelist
+                        || config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER)) {
+                    pendingManualScan = bridge.getMaterialSelection(config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER);
+                }
                 handleEmptyMaterialList(scan);
                 return;
             }
@@ -650,7 +838,8 @@ public final class AutoBuyManager {
                 return;
             }
             case OK -> {
-                if (emptyMaterialListWarned) {
+                if (emptyMaterialListWarned && !config.autoSyncWhitelist
+                        && config.purchaseMode == AutoBuyConfig.PurchaseMode.BULK) {
                     feedback.chat("材料清單已就緒（" + scan.required().size()
                             + " 種材料）；開始計算缺料。");
                 }
@@ -662,14 +851,26 @@ public final class AutoBuyManager {
                 + ", material kinds=" + scan.required().size());
         consecutiveErrors = 0;
 
-        if (!validatePurchaseLayerMode(scan, false)) {
-            return;
-        }
-
         if (config.autoSyncWhitelist) {
             SyncOutcome syncOutcome = applyWhitelistSync(scan, false);
-            if (syncOutcome.changed() && syncOutcome.saved()) {
-                feedback.actionBar("白名單已自動同步；下一輪掃描再購買。");
+            if (!syncOutcome.saved()) {
+                return;
+            }
+            if (syncOutcome.changed()) {
+                if (manual) {
+                    pendingManualScan = bridge.getMaterialSelection(
+                            config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER);
+                }
+                feedback.actionBar("自適應白名單已更新：" + scan.placementName()
+                        + " | " + config.whitelist.size() + " 項");
+                return;
+            }
+            if (!manual && !autoEnabled) {
+                feedback.actionBar("自適應白名單：" + scan.placementName()
+                        + " | " + config.whitelist.size() + " 項 | 自動購買關閉");
+                return;
+            }
+            if (!canPurchase(now)) {
                 return;
             }
         }
@@ -799,6 +1000,9 @@ public final class AutoBuyManager {
             }
         }
 
+        queuedSelection = config.autoSyncWhitelist || config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER
+                ? bridge.getMaterialSelection(config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER) : null;
+        queuedMaxStackByItem = scan.maxStackByItem();
         int enqueued = 0;
         for (BuyCommandSender.Order order : plannedOrders) {
             if (sender.enqueue(order.itemId(), order.count())) {
@@ -845,56 +1049,13 @@ public final class AutoBuyManager {
         }
     }
 
-    private boolean validatePurchaseLayerMode(MaterialScanner.ScanResult scan, boolean manual) {
-        if (config.purchaseMode == AutoBuyConfig.PurchaseMode.EXACT_LAYER
-                && !scan.renderLayersOnly()) {
-            if (bridge.switchMaterialListType(true)) {
-                resetEmptyMaterialListState();
-                if (manual) {
-                    feedback.chat("精確層模式：材料清單已切換為「渲染層」並重新計數，請等進度／ETA。");
-                } else {
-                    feedback.chatThrottled("exact-layer-switched",
-                            "精確層模式：材料清單已自動切換為「渲染層」並重新計數，請等進度／ETA。",
-                            15_000L);
-                }
-                feedback.actionBar("精確層：材料清單切換中");
-            } else {
-                String message = "精確層模式需要「渲染層」材料清單，但目前無法切換"
-                        + "（計算中或未選取 placement）；請稍後再試。";
-                if (manual) {
-                    feedback.chat(message);
-                } else {
-                    feedback.chatThrottled("exact-layer-required", message, 30_000L);
-                }
-                feedback.actionBar("精確層：等待切換材料清單");
-            }
-            return false;
-        }
-        if (config.purchaseMode == AutoBuyConfig.PurchaseMode.BULK
-                && scan.renderLayersOnly()) {
-            if (bridge.switchMaterialListType(false)) {
-                resetEmptyMaterialListState();
-                if (manual) {
-                    feedback.chat("大量模式：材料清單已切換為「全部」並重新計數，請等進度／ETA。");
-                } else {
-                    feedback.chatThrottled("bulk-layer-switched",
-                            "大量模式：材料清單已自動切換為「全部」並重新計數，請等進度／ETA。",
-                            15_000L);
-                }
-                feedback.actionBar("大量模式：材料清單切換中");
-            } else {
-                String message = "大量模式需要「全部」材料清單，但目前無法切換"
-                        + "（計算中或未選取 placement）；請稍後再試。";
-                if (manual) {
-                    feedback.chat(message);
-                } else {
-                    feedback.chatThrottled("bulk-layer-required", message, 30_000L);
-                }
-                feedback.actionBar("大量模式：等待切換材料清單");
-            }
-            return false;
-        }
-        return true;
+    private void showSingleLayerRequired() {
+        sender.clear();
+        resetEmptyMaterialListState();
+        feedback.chatThrottled("single-layer-required",
+                "精確單層模式只支援 Litematica「層級：單層」；請先選取 placement 並切到單層。"
+                        + "下方所有、上方所有與範圍模式不會購買。", 15_000L);
+        feedback.actionBar("精確單層：請切換至「層級：單層」");
     }
 
     private static int requiredMainSlots(Map<String, Integer> quantities,

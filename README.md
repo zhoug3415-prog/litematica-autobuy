@@ -15,15 +15,15 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
 - 庫存範圍：主背包 36 格＋副手；不計盔甲、終界箱、附近容器、潛影盒／束口袋內容
 - 缺料基準：預設 `missing`（尚未放置的方塊）；可改 `total`
 - 同 item ID 的不同 NBT／components：合併為同一種物品
-- 投影範圍：只計算目前選取的 placement
+- 投影範圍：預設使用手動選取的 placement；自適應白名單開啟時使用離玩家最近的已啟用 placement
 - 白名單空值：**全部禁止**
-- 白名單同步：讀取目前選取 placement 的材料清單；`missing > 0` 加入白名單、`missing == 0` 移除。可手動快捷鍵同步，或設定 `autoSyncWhitelist` 自動同步
+- 白名單同步：以目標 placement 尚需材料整份替換白名單，刪除其他選區物品及已完成項目；可手動同步或啟用 `autoSyncWhitelist` 自適應同步
 - 商店指令：`/buy <item_id> <count>`；`item_id` 不帶 `minecraft:` 前綴；投影 ID 直接等於商店 ID
 - 購買限制：指令冷卻 1000 ms、每輪最多 4 條指令、單次購買上限 576
 - 購買前確認：不需要，直接送出
 - 缺料歸零：停止送單，但持續監控
 - 庫存門檻：白名單物品庫存 `>= 4 組` 不買、`1–4 組` 等待、`<= 1 組` 才買；`<=1 組` 時補到 4 組，但不超過投影缺額（組＝該物品最大堆疊數）
-- 購買模式可切換：精確渲染層（本層缺多少買多少）／大量（整份投影＋4/1 庫存門檻）；新快捷鍵切換
+- 購買模式可切換：精確單層（本層缺多少買多少）／大量（整份投影＋4/1 庫存門檻）；新快捷鍵切換
 - Printer gate 預設：Printer 的全域 Work Switch 與 Print 模組都開啟
 
 ---
@@ -39,6 +39,7 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
 | Fabric API | 0.165.2+26.3（實際最新；任務文件中的 0.160.7 為較舊版本） |
 | Litematica | 0.29.1 |
 | MaLiLib | 0.30.2 |
+| Cloth Config | 26.3.159 |
 | Litematica Printer 4th | water2004 `1.1.3-hotfix.1+26.3` |
 | Java | 25 |
 | Gradle | 9.8.2 |
@@ -54,6 +55,7 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
 - Fabric API 26.3：<https://modrinth.com/mod/fabric-api/versions?g=26.3>
 - Litematica 0.29.1：<https://modrinth.com/mod/litematica>
 - MaLiLib 0.30.2：<https://modrinth.com/mod/malilib>
+- Cloth Config 26.3.159：<https://modrinth.com/mod/cloth-config>
 - Litematica Printer 4th v1.1.3（water2004）：<https://github.com/water2004/litematica-printer/releases/tag/v1.1.3>
   - 26.3 檔案：`litematica-printer-1.1.3-hotfix.1+26.3.jar`
 
@@ -66,10 +68,11 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
    - Fabric API `0.165.2+26.3`
    - Litematica `litematica-fabric-26.3-0.29.1.jar`
    - MaLiLib `malilib-fabric-26.3-0.30.2.jar`
+   - Cloth Config `cloth-config-fabric-26.3.159.jar`
    - Litematica Printer `litematica-printer-1.1.3-hotfix.1+26.3.jar`
    - 本模組 `litematica-autobuy-1.0.0.jar`
 3. 啟動遊戲，進入 **選項 → 控制 → 按鍵綁定**，找到 **Litematica AutoBuy**（中文語系顯示 **Litematica 自动补料／自動補料**）分類。
-4. 依需求綁定五個快捷鍵（預設皆未綁定，避免與其他模組衝突）。
+4. 依需求綁定六個快捷鍵（預設皆未綁定，避免與其他模組衝突）。
 5. 在 Litematica 選取一個 placement，讓它的材料清單計算完成。
 6. 白名單可用「同步白名單」快捷鍵從目前選取 placement 產生；也可直接編輯 `config/litematica-autobuy.json`。編輯後按重新載入快捷鍵或重開遊戲。
 7. 按「立即掃描並補料」測試，或開啟「切換自動補料」。
@@ -88,11 +91,20 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
 | `key.litematica-autobuy.scan` | 立即掃描並補料（即使持續自動關閉也可用） |
 | `key.litematica-autobuy.reload` | 重新載入 `config/litematica-autobuy.json` |
 | `key.litematica-autobuy.sync_whitelist` | 從目前選取 placement 同步白名單（`missing > 0` 加入、`missing == 0` 移除） |
-| `key.litematica-autobuy.purchase_mode` | 切換購買模式：精確渲染層 ↔ 大量 |
+| `key.litematica-autobuy.purchase_mode` | 切換購買模式：精確單層 ↔ 大量 |
+| `key.litematica-autobuy.config_gui` | 開啟 AutoBuy 設定 GUI（Cloth Config） |
 
 - 立即掃描仍受 Printer gate、白名單、冷卻、上限等安全機制限制。
 - 重新載入會解除「購買失敗封鎖」，但不會清除已送出、尚未到帳的待追蹤訂單。
 - 切換關閉會清除尚未送出的佇列；已送出的訂單仍會追蹤到逾時為止。
+
+### 設定 GUI
+
+- 新快捷鍵 `key.litematica-autobuy.config_gui`（預設未綁定）開啟 Cloth Config 設定畫面。
+- 需安裝 Cloth Config 26.3.159+。
+- 可設定：自動補料開關、購買模式、單次購買上限、每輪指令數、冷卻、掃描間隔、待送達逾時／重試、庫存門檻（停止／觸發／目標組數）、副手計入、自適應白名單（最近藍圖）、GUI／容量暫停、聊天／action bar／購買公告／debug、Printer gate、需求計數、白名單與失敗訊息樣式。
+- 按 Done／儲存會寫回 `config/litematica-autobuy.json` 並即時套用；模式切換會同步 Litematica 材料清單類型並重新計數。
+- 若模式切換失敗（材料清單正在計算或未選取 placement），其他設定仍會儲存，聊天會提示。
 
 ---
 
@@ -110,12 +122,12 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
 | `countOffhand` | `true` | 是否把副手計入庫存 |
 | `whitelist` | `[]` | 允許購買的物品 ID；空值代表全部禁止 |
 | `whitelistEmptyAllowAll` | `false` | 是否讓空白名單變成全部允許（不建議） |
-| `autoSyncWhitelist` | `false` | 掃描前自動同步白名單；有變更時該輪不購買，下一輪才使用新名單 |
+| `autoSyncWhitelist` | `false` | 自適應白名單：自動追蹤最近已啟用藍圖，以本模式尚需材料替換名單，移除非本選區項目；自動購買關閉時仍同步 |
 | `stockGateEnabled` | `true` | 是否啟用庫存門檻 |
 | `stockHighStacks` | `4` | 庫存 >= 此組數不買 |
 | `stockLowStacks` | `1` | 庫存 <= 此組數才買 |
 | `stockTargetStacks` | `4` | 觸發時目標組數；仍受投影缺額與單次上限 |
-| `purchaseMode` | `BULK` | 購買模式：`EXACT_LAYER`（精確渲染層）或 `BULK`（整份投影＋4/1 門檻） |
+| `purchaseMode` | `BULK` | 購買模式：`EXACT_LAYER`（精確單層）或 `BULK`（整份投影＋4/1 門檻） |
 | `commandCooldownMs` | `1000` | 兩條 `/buy` 指令的最小間隔 |
 | `maxCommandsPerScan` | `4` | 每次掃描最多排入幾條指令 |
 | `maxItemsPerOrder` | `576` | 單次 `/buy` 的數量上限 |
@@ -146,7 +158,7 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
 
 1. 每輪掃描先確認：不在創造／旁觀模式、沒有開啟 GUI、Printer gate 通過、目前已選取 placement。
 2. 取得 `SchematicPlacement#getMaterialList()`，讀取 `MaterialListBase#getMaterialsAll()`。
-3. 依 `requiredCountMode` 取每種材料的 `countMissing` 或 `countTotal`，用 item ID 合併 components。
+3. 精確單層取 `max(0, countMissing − countMismatched)`；大量模式依 `requiredCountMode` 取 `countMissing` 或 `countTotal`，用 item ID 合併 components。
 4. 統計主背包 36 格＋副手的物品數量，計算 `max(0, required - available)`。
 5. 過濾白名單、待送達、失敗封鎖、每輪上限後，排入購買佇列。
 6. 佇列每次最多送一條指令，遵守 `commandCooldownMs`；單次數量不超過 `maxItemsPerOrder`。
@@ -158,16 +170,20 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
 ### 白名單同步
 
 - 快捷鍵：`key.litematica-autobuy.sync_whitelist`（預設未綁定）。
-- 來源：目前選取 placement 的 `MaterialListBase#getMaterialsAll()`，以 `getCountMissing()` 判定；同 item ID 的不同 components 會合併。
-- `countMissing > 0` 的物品加入白名單；`countMissing == 0` 的物品從白名單移除。
-- 不在目前材料清單中的既有白名單項目會保留（merge；不是整份替換）。
+- 來源：目前選取 placement 的 `MaterialListBase#getMaterialsAll()`；大量模式用 `countMissing`，精確單層用 `max(0, countMissing − countMismatched)`；同 item ID 的不同 components 會合併。
+- 尚需放置數 > 0 的物品加入白名單；等於 0 的物品從白名單移除（不先扣除庫存）。
+- 同步是**整份替換**：不在目前材料清單中的舊項目一律移除；已完成（尚需放置數為 0）的項目也移除。
 - 只改寫 `config/litematica-autobuy.json` 的 `whitelist` 欄位，其他設定保留；若 config 格式錯誤或無法寫入，白名單不變並提示。
 - 同步以目前記憶體中的白名單為基礎；若你手動改過 JSON（尤其 `whitelist`），請先按重新載入再同步，否則同步可能覆蓋尚未載入的變更。
 - 同步本身不送出任何 `/buy`。手動同步成功後會把自動掃描延後一輪，避免同步完立刻下單；若白名單有變更，尚未送出的購買佇列會被清除，下一輪重新評估。
-- `autoSyncWhitelist = true` 時，每次通過安全條件的掃描會先自動同步；若白名單有變更，該輪不購買，下一輪才使用新名單。自動同步只在實際掃描時執行，Printer gate／GUI／創造模式等安全條件仍會先套用。
+- `autoSyncWhitelist = true` 啟用**自適應白名單**（GUI → 白名單／錯誤樣式，預設關閉）。依玩家到各 placement 已啟用子區域的最短距離挑選最近藍圖；停用或沒有有效子區域的 placement 不參與，等距時保留目前目標以避免反覆切換。
+- 白名單與補料使用同一個最近目標，不改動 Litematica 的手動選取或 Printer 放置邏輯。精確單層取目前層的未放置材料；大量模式取整份 placement 的缺料。
+- 自適應同步依 `scanIntervalTicks` 執行，關閉自動補料、Printer 未啟用或創造模式時仍會更新白名單，**但不會因此開啟購買**。購買仍須自動補料開啟或手動掃描，並通過原有安全條件；GUI 開啟時依 `skipWhenScreenOpen` 暫停自動掃描。
+- 換最近目標、移動／旋轉 placement 或換單層時，立即清除未送出的舊佇列，等待新計數；只取消本模組建立的過期計數任務，不中止 Litematica 或其他模組的任務。
+- 名單變更的當輪不購買，下一輪重新計算後使用新名單；沒有目標、未完成或失敗時保留原名單並禁止以它對新目標下單。完成的空清單則安全清空白名單；寫入失敗時不購買。
 - 手動同步不受 Printer gate、GUI、創造模式限制，但仍需要已選取 placement 且材料清單已完成。
 - 若 Litematica 材料清單目前只包含渲染層，同步也只處理該範圍。
-- 注意：若 `whitelistEmptyAllowAll = true`，同步把白名單清空後會變成全部允許；不建議同時使用這兩個設定。
+- 自適應模式下，空白名單永遠禁止全部物品，即使 `whitelistEmptyAllowAll=true` 也不例外；關閉自適應才沿用該選項。
 
 ### 庫存門檻
 
@@ -190,10 +206,13 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
   - 切換會清空舊材料清單並重新計數；若目前有材料清單任務在計算，會拒絕切換，等進度／ETA 完成後再按。
   - 掃描時若模式與材料清單類型不符，且沒有計算任務，會自動切換並重算。
 - **精確層（EXACT_LAYER）**
-  - 使用 Litematica 的渲染層材料清單，支援目前的 Layer 模式：**下方所有**、**上方所有**、**單層**；Layer range 本身由 Litematica 的 Layer 快捷鍵／設定控制，本模組不會改它。
-  - 使用 `countMissing`：已正確放置的方塊不買；已放置但方塊狀態錯誤仍算缺料（可能需要替換）。
-  - 購買量 = `max(0, 本層 countMissing − 主背包／副手庫存)`；忽略 4/1 庫存門檻。
-  - 摘要會顯示「精確層（下方所有／上方所有／單層）」。
+  - **只支援「層級：單層」**；下方所有、上方所有、範圍或全部模式會暫停購買／白名單同步並提示。本模組不會替你改 Layer 模式或層數。
+  - 每輪批次重新建立目前單層的未放置材料清單：`max(0, countMissing − countMismatched)`，只計算尚未放置（世界為空氣）的位置；正確放置、錯方塊及錯狀態都不計。
+  - 購買量 = `max(0, 本層未放置材料清單 − 主背包／副手庫存)`；副手依 `countOffhand`，忽略 4/1 庫存門檻及 `requiredCountMode`。
+  - 切換層數、軸向、Layer 模式或選取 placement 後，舊清單不會用於新一輪購買；尚未送出的舊佇列會清除。計算中的任務不會反覆重啟。
+  - 已完成的空層視為無缺料；正常重新計數只更新 action bar，不反覆發送準備／完成聊天訊息。
+  - 手動掃描／同步只需按一次，計數完成後接續處理；等待期間若換層或修改 placement，取消該次手動操作。
+  - 摘要會顯示單層軸向與層數，例如「精確層（單層 Y=64）」。
 - **大量（BULK）**
   - 使用整份投影材料清單（全部），套用 4/1 庫存門檻，與原本大量補貨行為相同。
   - 同樣使用 `countMissing`：已正確放置不計，狀態錯誤仍算。
@@ -208,7 +227,7 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
 - 可用容量＝主背包空格＋現有同物品部分堆疊的剩餘空間；副手與盔甲不計入容量。
 - 容量不足時不送出，清除尚未送出的佇列，聊天／action bar 顯示需要的格數與目前空格；auto 掃描會持續重試，空間足夠後自動恢復購買。
 - 如果需要的格數超過主背包總格數（36），會提示你降低 `maxItemsPerOrder` 或 `maxCommandsPerScan`，不會無限等待。
-- 精確渲染層模式同樣會經過容量等待；`skipWhenInventoryFull=false` 才會忽略容量直接送單（可能掉地或被伺服器拒收）。
+- 精確單層模式同樣會經過容量等待；`skipWhenInventoryFull=false` 才會忽略容量直接送單（可能掉地或被伺服器拒收）。
 
 ---
 
@@ -251,14 +270,14 @@ Minecraft Java Edition 26.3 / Fabric 的**客戶端**模組。讀取目前選取
 - 失敗訊息依 `failurePatterns` 子字串比對；不同伺服器外掛的訊息可能不同，請自行補充。
 - 沒有圖形設定介面；請編輯 JSON 並按重新載入。
 - 客戶端 only；伺服器必須支援 `/buy`，且你必須有權限。
-- 本模組不啟用 Printer、不選取 placement、不建立材料清單，也不修改放置邏輯。
+- 本模組不啟用 Printer、不改變 Litematica 手動選取，也不修改放置邏輯；會透過 Litematica 計數任務建立補料目標的材料清單。
 - 沒有使用 Mixin；相容性依賴 26.3 的公開 API 與 Printer 的反射入口。
 - Litematica 材料清單 GUI 的 `multiplier` 不套用；本模組使用單份 placement 的 `countMissing`／`countTotal`。
 - `PRINTER_PRINTING` 模式只在 `PrinterStatus.PRINTING` 時運作；Printer 因缺料停下來等待時可能不是 `PRINTING`，因此不建議用它來補料，預設的 `PRINTER_ENABLED` 較適合。
 - Litematica 材料清單若包含實體 pick item（如物品展示框），也會被視為材料；請用白名單控制。
-- 白名單同步只會加入 `missing > 0` 並移除 `missing == 0`；不在目前材料清單中的既有白名單項目不會被刪除，因此不是整份替換。
-- 同步會以目前記憶體中的白名單為基礎；若你手動編輯 JSON（尤其 `whitelist` 或其他欄位），請先按重新載入再同步，否則同步可能覆蓋尚未載入的白名單變更。
-- `autoSyncWhitelist=true` 會隨掃描自動改寫 `whitelist`；請確認這是你想要的行為。`whitelistEmptyAllowAll=true` 與同步清空白名單同時使用會變成全部允許，預設為 `false`。
+- 白名單同步是整份替換，非本選區與已完成項目會刪除；手動維護的額外白名單不會保留。
+- 自適應只辨識目前已載入 Litematica 的 placement，不會搜尋磁碟上的藍圖檔案；判定最近不是判定 Printer 此刻實際正在列印哪個 placement。
+- `autoSyncWhitelist=true` 會隨掃描自動改寫 `whitelist`，空白時強制禁止全部；原有 `whitelistEmptyAllowAll` 不會放寬自適應模式。
 - 庫存門檻以 item 最大堆疊數計算；若 `maxItemsPerOrder` 太小，可能一次補不到 4 組，會等庫存再降到 <=1 組才再買。
 - 庫存門檻是購買時機的滯迴，不保證庫存永久維持在 4 組；實際仍受投影缺額、冷卻與單次上限限制。
 - Litematica 材料清單的計算速度由 Litematica 控制；本模組不會自動重建，避免在計算中打斷。若選取範圍很大，計算可能需要數分鐘；可縮小 placement／選區，或使用 Litematica 的渲染層限制（會影響統計範圍）。
@@ -323,10 +342,14 @@ build/libs/litematica-autobuy-1.0.0.jar
 - [ ] `PRINTER_PRINTING` 模式：只有 `PrinterStatus.PRINTING` 才掃描。
 - [ ] `ALWAYS` 模式：不需要 Printer 也能掃描。
 - [ ] 創造模式、GUI 開啟、主背包全滿：安全跳過並提示。
-- [ ] 多個 placement：只計算目前選取者。
+- [ ] 多個 placement：關閉自適應只計算手動選取者；開啟自適應只計算最近已啟用者。
 - [ ] 同 ID 不同 components：合併成一種缺料。
 - [ ] 綁定「同步白名單」：選取 placement 後按同步，`missing > 0` 加入、`missing == 0` 從白名單移除。
-- [ ] 不在目前材料清單中的既有白名單項目在同步後仍保留（merge，不是整份替換）。
+- [ ] 同步完整替換白名單：非目標選區與尚需放置數為 0 的舊項目全部刪除。
+- [ ] 自適應模式選擇離玩家已啟用區域最近的 placement，不受藍圖原點距離誤導；多子區域間隙與重疊等距時判定穩定。
+- [ ] 自動購買關閉／Printer 未安裝時，自適應名單仍更新，不會下單；啟用自動購買後仍須通過 Printer gate。
+- [ ] 最近目標 A 換成 B 時，先清除 A 未送出指令；B 計算完成前不使用 A 的白名單下單，待送達紀錄保留。
+- [ ] 無目標／計算中／讀寫失敗：保留原名單並不購買；完成的空清單清空，且不受空名單允許全部設定影響。
 - [ ] 同步後 config 的 `whitelist` 更新，其他設定欄位保留；未選 placement／材料清單未完成時不修改白名單。
 - [ ] 手動同步不送出 `/buy`，且自動掃描延後一輪；白名單有變更時未送出的舊佇列被清除。
 - [ ] `autoSyncWhitelist=true`：掃描前自動同步；有變更時該輪不購買，下一輪才使用新名單。
@@ -337,8 +360,11 @@ build/libs/litematica-autobuy-1.0.0.jar
 - [ ] 模式快捷鍵：精確層 ↔ 大量；Litematica 材料清單類型切到渲染層／全部並重新計數。
 - [ ] 材料清單計算中按模式鍵：拒絕切換並提示等進度／ETA 完成。
 - [ ] 精確層 + 材料清單是 All：自動切換為渲染層並重算；不會買整份投影。
-- [ ] 精確層 + Layer 模式下方所有／上方所有／單層：只算該範圍 `countMissing`；正確放置不買，錯狀態仍算。
-- [ ] 精確層購買量＝本層 `countMissing − 庫存`，忽略 4／1 門檻。
+- [ ] 精確單層 + 下方所有／上方所有／範圍／全部：不購買、不同步白名單，提示切換至單層。
+- [ ] 單層未放置 100、錯放 20、庫存 30：需求清單為 100，購買 70；正確放置與錯放都不加入需求。
+- [ ] 精確單層購買量＝`max(0, 本層 countMissing − countMismatched − 庫存)`，忽略 4／1 門檻與 TOTAL 設定。
+- [ ] 換層／軸向／placement 後，舊計數結果及未送出佇列不可下單；計算中多次掃描不重啟任務。
+- [ ] 完成的空層顯示無缺料；放置新方塊後下一批次重新計數，不沿用舊清單。
 - [ ] 大量模式：整份投影（全部）＋4/1 門檻；正確放置不計。
 - [ ] 白名單同步使用目前購買模式的材料清單。
 - [ ] 背包滿／空格不足：本輪不送出，顯示需要格數與目前空格；清空／消耗物品後自動恢復。
@@ -353,15 +379,17 @@ build/libs/litematica-autobuy-1.0.0.jar
 
 ## 11. 建置驗證狀態
 
-以下是 2026-11-08 在本機實際執行的結果：
+以下是 2026-11-12 在本機實際執行的結果：
 
-- 原始碼與版本 API：已依 26.3 官方 Fabric 範例、Litematica 0.29.1 原始碼、water2004 Printer v1.1.3 原始碼核對。
-- Gradle wrapper：Gradle 9.8.2 可執行；本機以 JDK 27 執行，編譯目標為 Java 25。
-- `./gradlew clean build`：**BUILD SUCCESSFUL in 4s**（Fabric Loom 1.19.4）。
-- 依賴解析：Fabric API 0.165.2+26.3、Litematica 0.29.1、MaLiLib 0.30.2。
-- 產物：`build/libs/litematica-autobuy-1.0.0.jar`（約 67 KB）。
-- 已檢查 jar：`fabric.mod.json`、client entrypoint、`zh_cn`／`zh_tw`／`en_us` 語系（含 `sync_whitelist`、`purchase_mode` 快捷鍵）都存在；沒有 Mixin，也沒有打包 Litematica／MaLiLib／Printer。
-- 白名單同步、庫存門檻、精確層／大量模式切換（含下方所有／上方所有／單層）、背包容量等待與空材料清單進度 ETA 已加入並通過編譯；實際選取 placement、切換、容量等待與購買仍需依第 10 節手動測試。
+- 原始碼與版本 API：精確單層與放置列舉 API 已依快取的 Litematica／MaLiLib 26.3、26.2 jar 簽章與計數位元碼核對。
+- Gradle wrapper：Gradle 9.8.2 可執行；本機以 JDK 25 執行，編譯目標為 Java 25。
+- `./gradlew build`：**BUILD SUCCESSFUL in 42s**（Fabric Loom 1.19.4；含自適應白名單與 Printer 佇列閘門）。
+- 依賴解析：Fabric API 0.165.2+26.3、Litematica 0.29.1、MaLiLib 0.30.2、Cloth Config 26.3.159。
+- 產物：`build/libs/litematica-autobuy-1.0.0.jar`（約 85 KB，SHA-256 `43e2c45cd66a516a70141cf71b7bfc740bf78da51f15c0f43a56b38a54144239`）。
+- 實際原始碼搭配外部 API 替身：134 項隔離回歸測試在 JDK 25／27 均通過（各 1,146 個斷言），涵蓋最近藍圖判定、白名單完整替換、單層限制、錯放排除、庫存差額、非同步完成／取消、換層與 placement 變動、手動操作接續、Printer 佇列閘門及佇列容量保護；不等同真實世界／GUI 測試。
+- 已在獨立開發客戶端（26.3）看到 AutoBuy 的六個快捷鍵分類與可綁定按鍵；GUI 內容、實際材料計數與 `/buy` 尚未於連線世界驗證。
+- 已檢查 jar：`fabric.mod.json`、client entrypoint、`zh_cn`／`zh_tw`／`en_us` 語系（含 `sync_whitelist`、`purchase_mode`、`config_gui` 快捷鍵）都存在；沒有 Mixin，也沒有打包 Litematica／MaLiLib／Printer。
+- 白名單同步、庫存門檻、精確單層／大量模式切換、背包容量等待、空材料清單進度 ETA 與 Cloth Config 設定 GUI 已加入並通過編譯；實際選取 placement、GUI 儲存、切換、容量等待與購買仍需依第 10 節手動測試。
 - **尚未**實際啟動 Minecraft client、載入世界、選取 placement、連線伺服器或驗證 `/buy` 的回應；這些屬於待你在 26.3 環境完成的功能測試。
 - Printer 未放入 `libs/`，因此建置時沒有做 Printer 的 dev runtime 載入測試；正式遊玩請直接把 Printer jar 放進 `mods/`。
 
